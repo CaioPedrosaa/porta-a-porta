@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Porta a Porta",
+    "slug": "porta-a-porta",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-font",
+      "expo-sqlite"
+    ]
+  }
+}
