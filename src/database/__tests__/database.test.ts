@@ -74,18 +74,31 @@ describe('Testes do banco de dados', () => {
 
     const sql = mockDatabase.getAllAsync.mock.calls[0][0];
 
-    expect(sql).toContain("WHERE status = 'ATIVO'");
-    expect(sql).toContain('ORDER BY id');
+   expect(sql).toContain("WHERE produto.status = 'ATIVO'");
+expect(sql).toContain('ORDER BY produto.id');
   });
 
-  test('3. Não deve inserir dados iniciais se já existem produtos', async () => {
-    mockDatabase.getFirstAsync.mockResolvedValue({
-      count: 2,
-    });
+  
+test('3. Deve verificar os dados antes de evitar duplicações', async () => {
+  mockDatabase.getFirstAsync
+    .mockResolvedValueOnce({ id: 1 }) // condomínio
+    .mockResolvedValueOnce({ id: 1 }); // vendedor
 
-    await seedDatabase();
+  mockDatabase.getAllAsync.mockResolvedValue([
+    { id: 1, titulo: 'Misto Quente', status: 'ATIVO' },
+  ]);
 
-    expect(mockDatabase.getFirstAsync).toHaveBeenCalled();
-    expect(mockDatabase.runAsync).not.toHaveBeenCalled();
-  });
+  await seedDatabase();
+
+  expect(mockDatabase.getFirstAsync).toHaveBeenCalled();
+  expect(mockDatabase.runAsync).toHaveBeenCalled();
+
+  const comandos = mockDatabase.runAsync.mock.calls.map(
+    (call) => call[0] as string
+  );
+
+  expect(
+    comandos.every((sql) => sql.includes('WHERE NOT EXISTS'))
+  ).toBe(true);
+});
 });

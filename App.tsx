@@ -1,29 +1,54 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { initializeDatabase, seedDatabase, getProducts } from './src/database/database';
 
-type Product = { id:number; seller:string; name:string; price:number; image:string };
+import {
+  initializeDatabase,
+  seedDatabase,
+  getProducts,
+  createOrder,
+  getDatabase,
+  getDemoOrderIds,
+  getDemoSellerId,
+  getOrders,
+  getSellerSalesSummary,
+  getSellerSalesByPeriod,
+  getSellerRecentSales,
+  updateOrderStatus,
+  getSellerMonthlySales,
+  sendMessage as sendMessageToDatabase,
+  getMessagesByOrderForParticipant,
+} from './src/database/database';
+
+type Product = { id: number; seller: string; name: string; price: number; image: string };
 type Order = { id:number; seller:string; product:string; price:number; image:string; status:string };
-type Chat = { id:number; name:string; preview:string; time:string };
+type Chat = {
+  id: number;
+  pedidoId: number;
+  name: string;
+  preview: string;
+  time: string;
+};
 
-const products: Product[] = [
- {id:1,seller:'Padaria da dona Roberta',name:'Misto Quente',price:29.5,image:'https://images.unsplash.com/photo-1528735602780-2552fd46c7af?w=600'},
- {id:2,seller:'Padaria da dona Roberta',name:'Hamburguer Duplo',price:39.9,image:'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600'},
- {id:3,seller:'Sabor de Casa',name:'Bolo de Chocolate',price:25,image:'https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=600'},
- {id:4,seller:'Sabor de Casa',name:'Suco Natural 1L',price:12,image:'https://images.unsplash.com/photo-1600271886742-f049cd451bba?w=600'}
+const fallbackProducts: Order[] = [
+  {
+    id: 1001,
+    seller: 'Padaria da dona Roberta',
+    product: 'Misto Quente',
+    price: 29.5,
+    image: 'https://images.unsplash.com/photo-1528735602780-2552fd46c7af?w=600',
+    status: 'Pedido Finalizado'
+  },
+  {
+    id: 1002,
+    seller: 'Padaria da dona Roberta',
+    product: 'Hamburguer Duplo',
+    price: 39.9,
+    image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600',
+    status: 'Pedido Finalizado'
+  }
 ];
 
-const initialOrders: Order[] = [
- {id:1001,seller:'Padaria da dona Roberta',product:'Misto Quente',price:29.5,image:products[0].image,status:'Pedido Finalizado'},
- {id:1002,seller:'Padaria da dona Roberta',product:'Hamburguer Duplo',price:39.9,image:products[1].image,status:'Pedido Finalizado'}
-];
-
-const chats: Chat[] = [
- {id:1,name:'Padaria da dona Roberta',preview:'Seu pedido ficará pronto às 16:30.',time:'16:10'},
- {id:2,name:'Sabor de Casa',preview:'Olá! O bolo está disponível hoje.',time:'14:42'},
- {id:3,name:'João - Bloco B',preview:'Obrigado pela compra!',time:'Ontem'}
-];
 
 const money=(v:number)=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 
@@ -31,78 +56,401 @@ type Screen = 'home'|'orders'|'cart'|'profile'|'sellerProfile'|'sellerDashboard'
 
 export default function App(){
 
-  useEffect(() => {
-    initializeDatabase()
-      .then(() => seedDatabase())
-      .then(() => {
-        console.log('SQLite pronto!');
-      })
-      .catch((error) => {
-        console.error('Erro SQLite:', error);
-      });
-  }, []);
+  
+useEffect(() => {
+  async function loadProducts() {
+    try {
+      await initializeDatabase();
+      await seedDatabase();
+
+      const data = await getProducts();
+
+console.log('PRODUTOS NO SQLITE:', data.map(p => p.titulo));
+
+setProducts(
+  data.map((p) => ({
+    id: p.id,
+    seller: p.nome_vendedor,
+    name: p.titulo,
+    price: p.preco,
+    image: p.foto_url ?? '',
+  }))
+);
+
+await loadOrders();
+await loadChats();
+
+console.log('SQLite pronto! Produtos carregados:', data.length);
+} catch (error) {
+  console.error('Erro ao carregar produtos do SQLite:', error);
+}
+}
+
+loadProducts();
+}, []);
+
 
  const [screen,setScreen]=useState<Screen>('orders');
  const [search,setSearch]=useState('');
  const [cart,setCart]=useState<Product[]>([]);
- const [orders,setOrders]=useState<Order[]>(initialOrders);
- const [selectedChat,setSelectedChat]=useState<Chat | null>(null);
+const [orders, setOrders] = useState<Order[]>([]);
  const [message,setMessage]=useState('');
- const filtered=products.filter(p=>p.name.toLowerCase().includes(search.toLowerCase()));
+ const [products, setProducts] = useState<Product[]>([]);
+ const [recentSales, setRecentSales] = useState<
+  Awaited<ReturnType<typeof getSellerRecentSales>>
+>([]);
+const [salesSummary, setSalesSummary] = useState({
+  totalPedidos: 0,
+  faturamentoTotal: 0,
+});
+const [dailyRevenue, setDailyRevenue] = useState(0);
+const [monthlyRevenue, setMonthlyRevenue] = useState(0);
+const [monthlySales, setMonthlySales] = useState<
+  { mes: number; faturamento: number }[]
+>([]);
+ const filtered = products.filter(p =>
+  p.name.toLowerCase().includes(search.toLowerCase())
+);
+const [selectedChat, setSelectedChat] = useState<any>(null);
+type ChatMessage = {
+  id: number;
+  pedido_id: number;
+  remetente_id: number;
+  nome_remetente: string;
+  texto_mensagem: string;
+  data_envio: string;
+};
 
- function add(p:Product){
+const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+const [chats, setChats] = useState<Chat[]>([]);
+
+async function testDatabase() {
+  try {
+    const database = await getDatabase();
+
+    const tables = [
+      'usuario',
+      'produto',
+      'pedido',
+      'item_pedido',
+      'avaliacao',
+      'conversa',
+      'mensagem_chat',
+    ];
+
+    const results: string[] = [];
+
+    for (const table of tables) {
+      const rows = await database.getAllAsync<{
+        from: string;
+        table: string;
+        to: string;
+      }>(`PRAGMA foreign_key_list("${table}")`);
+
+      results.push(
+        `${table}: ${
+          rows.length
+            ? rows.map((r) => `${r.from} → ${r.table}.${r.to}`).join(', ')
+            : 'sem chaves estrangeiras'
+        }`
+      );
+    }
+
+    console.log('RELACIONAMENTOS:', results);
+
+    Alert.alert('Relacionamentos do banco', results.join('\n\n'));
+  } catch (error) {
+    console.error('Erro ao verificar relacionamentos:', error);
+
+    Alert.alert(
+      'Erro',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+async function loadOrders() {
+  try {
+    const ids = await getDemoOrderIds();
+    const pedidos = await getOrders(ids.compradorId);
+
+    setOrders(pedidos);
+  } catch (error) {
+    console.error('Erro ao carregar pedidos:', error);
+    Alert.alert('Erro', 'Não foi possível carregar os pedidos.');
+  }
+}
+
+
+async function loadChats() {
+  try {
+    const ids = await getDemoOrderIds();
+    const pedidos = await getOrders(ids.compradorId);
+
+    const conversas = await Promise.all(
+      pedidos.map(async (pedido) => {
+        const mensagens = await getMessagesByOrderForParticipant(
+          pedido.id,
+          ids.compradorId
+        );
+
+        const ultimaMensagem = mensagens[mensagens.length - 1];
+
+        return {
+          id: pedido.id,
+          pedidoId: pedido.id,
+          name: pedido.seller,
+          preview: ultimaMensagem
+            ? ultimaMensagem.texto_mensagem
+            : pedido.product,
+          time: ultimaMensagem
+            ? new Date(ultimaMensagem.data_envio).toLocaleTimeString(
+                'pt-BR',
+                { hour: '2-digit', minute: '2-digit' }
+              )
+            : '',
+        };
+      })
+    );
+
+    setChats(conversas);
+  } catch (error) {
+    console.error('Erro ao carregar conversas:', error);
+    Alert.alert('Erro', 'Não foi possível carregar as conversas.');
+  }
+}
+
+async function loadConversation(chat: Chat) {
+  try {
+    const ids = await getDemoOrderIds();
+
+    const mensagens = await getMessagesByOrderForParticipant(
+      chat.pedidoId,
+      ids.compradorId
+    );
+
+    setCurrentUserId(ids.compradorId);
+    setChatMessages(mensagens);
+    setSelectedChat(chat);
+    setScreen('conversation');
+  } catch (error) {
+    console.error('Erro ao carregar mensagens:', error);
+    Alert.alert('Erro', 'Não foi possível carregar as mensagens.');
+  }
+}
+
+async function loadSellerSummary() {
+  
+try {
+  console.log('ETAPA 1: buscando vendedor');
+  const vendedorId = await getDemoSellerId();
+  try {
+  const testeMensal = await getSellerMonthlySales(
+    vendedorId,
+    new Date().getFullYear()
+  );
+  console.log('TESTE MENSAL OK:', testeMensal);
+} catch (erro) {
+  console.log('ERRO TESTE MENSAL:', erro);
+}
+
+  console.log('ETAPA 1 OK:', vendedorId);
+
+const anoAtual = new Date().getFullYear();
+const monthlyData = await getSellerMonthlySales(vendedorId, anoAtual);
+setMonthlySales(monthlyData);
+  const now = new Date();
+
+  const startOfDay = new Date(now);
+  startOfDay.setUTCHours(3, 0, 0, 0);
+
+  if (startOfDay.getTime() > now.getTime()) {
+    startOfDay.setUTCDate(startOfDay.getUTCDate() - 1);
+  }
+
+  const endOfDay = new Date(
+    startOfDay.getTime() + 24 * 60 * 60 * 1000
+  );
+
+
+    const year = now.getUTCFullYear();
+    const month = now.getUTCMonth();
+
+    const startOfMonth = new Date(
+      Date.UTC(year, month, 1, 3, 0, 0, 0)
+    );
+
+    const endOfMonth = new Date(
+      Date.UTC(year, month + 1, 1, 3, 0, 0, 0)
+    );
+
+    console.log('ETAPA 2: buscando resumo');
+    const summary = await getSellerSalesSummary(vendedorId);
+    console.log('ETAPA 2 OK:', summary);
+
+    console.log('ETAPA 3: buscando receita diária');
+    const daily = await getSellerSalesByPeriod(
+      vendedorId,
+      startOfDay.toISOString(),
+      endOfDay.toISOString()
+    );
+    console.log('ETAPA 3 OK:', daily);
+
+    console.log('ETAPA 4: buscando receita mensal');
+    const monthly = await getSellerSalesByPeriod(
+      vendedorId,
+      startOfMonth.toISOString(),
+      endOfMonth.toISOString()
+    );
+    console.log('ETAPA 4 OK:', monthly);
+
+    setSalesSummary(summary);
+setDailyRevenue(daily.faturamentoTotal);
+setMonthlyRevenue(monthly.faturamentoTotal);
+
+const sales = await getSellerRecentSales(vendedorId, 5);
+setRecentSales(sales);
+  } catch (error) {
+    console.error('ERRO NO DASHBOARD:', error);
+    Alert.alert(
+      'Erro no dashboard',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
+function add(p:Product){
   setCart(c=>[...c,p]);
   Alert.alert('Produto adicionado',`${p.name} foi adicionado ao carrinho.`);
  }
 
- function checkout(){
-  if(!cart.length){
-   Alert.alert('Carrinho vazio','Adicione um produto antes de finalizar.');
-   return;
+ 
+async function checkout() {
+  if (!cart.length) {
+    Alert.alert('Carrinho vazio', 'Adicione um produto antes de finalizar.');
+    return;
   }
 
-  const p=cart[0], total=cart.reduce((s,x)=>s+x.price,0);
+  try {
+    const ids = await getDemoOrderIds();
 
-  setOrders(o=>[
-   {
-    id:Date.now(),
-    seller:p.seller,
-    product:cart.length>1?`${p.name} + ${cart.length-1} item(ns)`:p.name,
-    price:total,
-    image:p.image,
-    status:'Pedido Pendente'
-   },
-   ...o
-  ]);
+    const pedidoId = await createOrder({
+      compradorId: ids.compradorId,
+      condominioId: ids.condominioId,
+      janelaHorario: 'A combinar',
+      itens: cart.map((p) => ({
+        produtoId: p.id,
+        quantidade: 1,
+        precoUnitario: p.price,
+      })),
+    });
 
-  setCart([]);
-  setScreen('orders');
-  Alert.alert('Pedido realizado','Seu pedido foi registrado com sucesso.');
- }
+    const p = cart[0];
+    const total = cart.reduce((s, x) => s + x.price, 0);
 
- function advance(id:number){
-  setOrders(os=>os.map(o=>
-   o.id===id
-    ? {
-       ...o,
-       status:
-        o.status==='Pedido Pendente'
-         ?'Pedido Aceito'
-         :o.status==='Pedido Aceito'
-          ?'Em preparo'
-          :o.status==='Em preparo'
-           ?'A caminho'
-           :'Pedido Finalizado'
-      }
-    :o
-  ));
- }
+    setOrders((o) => [
+      {
+        id: pedidoId,
+        seller: p.seller,
+        product:
+          cart.length > 1
+            ? `${p.name} + ${cart.length - 1} item(ns)`
+            : p.name,
+        price: total,
+        image: p.image,
+        status: 'Pedido Pendente',
+      },
+      ...o,
+    ]);
 
- function sendMessage(){
-  if(!message.trim()) return;
-  Alert.alert('Mensagem enviada',message.trim());
-  setMessage('');
- }
+    setCart([]);
+    setScreen('orders');
+
+    Alert.alert(
+      'Pedido realizado',
+      `Pedido #${pedidoId} salvo com sucesso no banco de dados.`
+    );
+  } catch (error) {
+    console.error('Erro ao salvar pedido:', error);
+    Alert.alert(
+      'Erro',
+      'Não foi possível salvar o pedido. Confira o terminal.'
+    );
+  }
+}
+
+
+async function advance(id: number) {
+  try {
+    const order = orders.find((item) => item.id === id);
+
+    if (!order) {
+      throw new Error('Pedido não encontrado.');
+    }
+
+    let nextStatus: string;
+    let databaseStatus: string;
+
+    if (order.status === 'Pedido Pendente') {
+      nextStatus = 'Pedido Aceito';
+      databaseStatus = 'ACEITO';
+    } else if (order.status === 'Pedido Aceito') {
+      nextStatus = 'Em preparo';
+      databaseStatus = 'EM_PREPARO';
+    } else if (order.status === 'Em preparo') {
+      nextStatus = 'A caminho';
+      databaseStatus = 'A_CAMINHO';
+    } else {
+      nextStatus = 'Pedido Finalizado';
+      databaseStatus = 'FINALIZADO';
+    }
+
+    const vendedorId = await getDemoSellerId();
+
+    await updateOrderStatus(id, vendedorId, databaseStatus);
+    await loadOrders();
+    await loadSellerSummary(); 
+
+    Alert.alert('Sucesso', `Status atualizado para: ${nextStatus}`);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Não foi possível atualizar o pedido.';
+
+    Alert.alert('Erro', message);
+  }
+}
+
+
+
+async function handleSendMessage() {
+  if (!message.trim() || !selectedChat) return;
+
+  try {
+    const ids = await getDemoOrderIds();
+    const textoEnviado = message.trim();
+
+    await sendMessageToDatabase({
+      pedidoId: selectedChat.pedidoId,
+      remetenteId: ids.compradorId,
+      texto: textoEnviado,
+    });
+
+    const mensagensAtualizadas = await getMessagesByOrderForParticipant(
+      selectedChat.pedidoId,
+      ids.compradorId
+    );
+
+    setChatMessages(mensagensAtualizadas);
+    setMessage('');
+    await loadChats();
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error);
+    Alert.alert('Erro', 'Não foi possível enviar a mensagem.');
+  }
+}
+
 
  return (
   <SafeAreaView style={s.safe}>
@@ -237,8 +585,14 @@ export default function App(){
      </ScrollView>
     }
 
-    {screen==='profile'&&
-     <ScrollView contentContainerStyle={s.profile}>
+    {screen === 'profile' && (
+  <ScrollView contentContainerStyle={s.profile}>
+    <Pressable
+      style={s.redWide}
+      onPress={testDatabase}
+    >
+      <Text style={s.white}>TESTAR BANCO DE DADOS</Text>
+    </Pressable>
       <Ionicons name="person-circle-outline" size={90} color="#d33"/>
       <Text style={s.title}>Meu perfil</Text>
       <Text style={s.profileText}>Caio Matos</Text>
@@ -255,7 +609,10 @@ export default function App(){
         <Ionicons name="chevron-forward" size={22} color="#777"/>
        </Pressable>
 
-       <Pressable style={s.menuCard} onPress={()=>setScreen('sellerDashboard')}>
+       <Pressable style={s.menuCard} onPress={() => {
+  setScreen('sellerDashboard');
+  loadSellerSummary();
+}}>
         <Ionicons name="bar-chart-outline" size={24} color="#d33"/>
         <View style={{flex:1}}>
          <Text style={s.menuTitle}>Dashboard de vendas</Text>
@@ -273,8 +630,8 @@ export default function App(){
         <Ionicons name="chevron-forward" size={22} color="#777"/>
        </Pressable>
       </View>
-     </ScrollView>
-    }
+      </ScrollView>
+)}
 
     {screen==='sellerProfile'&&
      <ScrollView contentContainerStyle={s.content}>
@@ -329,65 +686,157 @@ export default function App(){
        <Text style={s.dashPeriod}>Visão geral • Setembro</Text>
       </View>
 
-      <View style={s.metricRow}>
-       <Metric title="Receita do Dia" value="R$ 1.250,00" icon="trending-up-outline" wide/>
-       <Metric title="Pedidos" value="45" icon="cart-outline"/>
+      
 
-       <View style={{width:'31%'}}>
-        <Metric title="Ticket Médio" value="R$ 27,80" icon="analytics-outline"/>
-       </View>
-      </View>
+<View style={s.metricRow}>
+  <View style={{ flex: 1, minWidth: 0 }}>
+    <Metric
+      title="Receita do Dia"
+      value={`R$ ${dailyRevenue.toFixed(2).replace('.', ',')}`}
+      icon="trending-up-outline"
+    />
+  </View>
+
+  <View style={{ flex: 1, minWidth: 0 }}>
+    <Metric
+      title="Pedidos Finalizados"
+      value={String(salesSummary.totalPedidos)}
+      icon="cart-outline"
+    />
+  </View>
+
+  <View style={{ flex: 1, minWidth: 0 }}>
+    <Metric
+      title="Ticket Médio"
+      value={`R$ ${
+        salesSummary.totalPedidos > 0
+          ? (salesSummary.faturamentoTotal / salesSummary.totalPedidos)
+              .toFixed(2)
+              .replace('.', ',')
+          : '0,00'
+      }`}
+      icon="analytics-outline"
+    />
+  </View>
+</View>
+
 
       <View style={s.chartCard}>
        <Text style={s.chartTitle}>Receita Mensal</Text>
+<Text style={{ color: '#777', fontSize: 13, marginTop: 4 }}>
+  Total de vendas finalizadas no mês: R$ {monthlyRevenue.toFixed(2).replace('.', ',')}
+</Text>
+    
 
-       <View style={s.chart}>
-        <View style={s.gridLine1}/>
-        <View style={s.gridLine2}/>
-        <View style={s.gridLine3}/>
-        <View style={s.gridLine4}/>
+<View style={s.chart}>
+  {(() => {
+    const meses = [
+      'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+      'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez',
+    ];
 
-        <Text style={s.axis0}>0</Text>
-        <Text style={s.axis1}>100</Text>
-        <Text style={s.axis2}>200</Text>
-        <Text style={s.axis3}>300</Text>
+    const valores = meses.map((_, index) => {
+      const registro = monthlySales.find(
+        (item) => item.mes === index + 1
+      );
+      return registro?.faturamento ?? 0;
+    });
 
-        <View style={[s.segment,{left:28,top:125,width:62,transform:[{rotate:'-24deg'}]}]}/>
-        <View style={[s.segment,{left:83,top:101,width:72,transform:[{rotate:'-8deg'}]}]}/>
-        <View style={[s.segment,{left:146,top:91,width:67,transform:[{rotate:'-43deg'}]}]}/>
-        <View style={[s.segment, { left: 203, top: 49, width: 63, transform: [{ rotate: '18deg' }] }]} />
+    const maiorValor = Math.max(...valores, 1);
 
-<View style={[s.segment, { left: 258, top: 69, width: 62, transform: [{ rotate: '23deg' }] }]} />
-
-<View style={[s.segment, { left: 315, top: 94, width: 55, transform: [{ rotate: '-18deg' }] }]} />
-        <View style={s.xLabels}>
-         <Text>Set</Text>
-         <Text>Out</Text>
-         <Text>Nov</Text>
-         <Text>Dez</Text>
-        </View>
-       </View>
+    return (
+      <View
+        style={{
+          flex: 1,
+          flexDirection: 'row',
+          alignItems: 'flex-end',
+          justifyContent: 'space-around',
+          paddingTop: 20,
+          paddingBottom: 25,
+        }}
+      >
+        {valores.map((valor, index) => (
+          <View
+            key={meses[index]}
+            style={{
+              flex: 1,
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              height: '100%',
+            }}
+          >
+            <View
+              style={{
+                width: '55%',
+                height: `${Math.max(
+                  (valor / maiorValor) * 100,
+                  valor > 0 ? 4 : 0
+                )}%`,
+                backgroundColor: '#2E7D32',
+                borderTopLeftRadius: 4,
+                borderTopRightRadius: 4,
+                minHeight: valor > 0 ? 4 : 0,
+              }}
+            />
+            <Text style={{ fontSize: 9, color: '#777', marginTop: 6 }}>
+              {meses[index]}
+            </Text>
+          </View>
+        ))}
       </View>
+    );
+  })()}
+</View>
+</View>
 
-      <Text style={s.sectionTitle}>Feed de Vendas Recentes</Text>
+<Text style={s.sectionTitle}>Feed de Vendas Recentes</Text>
 
-      {[
-       ['Venda #1002','16:15','R$ 55,90',products[0].image],
-       ['Venda #1002','16:15','R$ 39,90',products[1].image],
-       ['Venda #1001','15:42','R$ 29,50',products[0].image]
-      ].map((v,i)=>
-       <View style={s.saleRow} key={i}>
-        <Image source={{uri:v[3]}} style={s.saleAvatar}/>
+      
+      {recentSales.map((sale) => (
+        <View style={s.saleRow} key={sale.pedidoId}>
+          <Image
+            source={
+  sale.imagem
+    ? { uri: sale.imagem }
+    : undefined
+}
+            style={s.saleAvatar}
+          />
 
-        <View style={{flex:1}}>
-         <Text style={s.saleTitle}>{v[0]}</Text>
-         <Text style={s.saleTime}>{v[1]}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={s.saleTitle}>
+              Pedido #{sale.pedidoId}
+            </Text>
+            <Text style={s.saleTime}>
+              {sale.comprador} ·{' '}
+              {new Date(sale.dataPedido).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+            <Text
+              style={{ color: '#777', fontSize: 11 }}
+              numberOfLines={1}
+            >
+              {sale.produtos}
+            </Text>
+          </View>
+
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={s.saleValue}>
+              {`R$ ${Number(sale.total).toFixed(2).replace('.', ',')}`}
+            </Text>
+            <Text style={{ color: '#777', fontSize: 11 }}>
+              {sale.status}
+            </Text>
+          </View>
         </View>
+      ))}
 
-        <Text style={s.saleValue}>{v[2]}</Text>
-        <Image source={{uri:v[3]}} style={s.saleFood}/>
-        <Ionicons name="checkmark-circle" size={23} color="#777"/>
-       </View>
+      {recentSales.length === 0 && (
+        <Text style={{ color: '#777', textAlign: 'center', marginVertical: 20 }}>
+          Nenhuma venda encontrada.
+        </Text>
       )}
 
       <View style={s.reportRow}>
@@ -413,10 +862,7 @@ export default function App(){
        <Pressable
         key={c.id}
         style={s.chatRow}
-        onPress={()=>{
-         setSelectedChat(c);
-         setScreen('conversation');
-        }}
+        onPress={() => loadConversation(c)}
        >
         <View style={s.chatAvatar}>
          <Ionicons name="person" size={21} color="#fff"/>
@@ -438,16 +884,25 @@ export default function App(){
       <Back title={selectedChat.name} onPress={()=>setScreen('chat')}/>
 
       <ScrollView contentContainerStyle={s.messages}>
-       <View style={s.received}>
-        <Text style={s.msgText}>{selectedChat.preview}</Text>
-        <Text style={s.msgTime}>{selectedChat.time}</Text>
-       </View>
-
-       <View style={s.sent}>
-        <Text style={s.msgText}>Olá! Gostaria de confirmar meu pedido.</Text>
-        <Text style={s.msgTime}>16:12</Text>
-       </View>
-      </ScrollView>
+  {chatMessages.map((msg) => (
+    <View
+      key={msg.id}
+      style={
+        msg.remetente_id === currentUserId
+          ? s.sent
+          : s.received
+      }
+    >
+      <Text style={s.msgText}>{msg.texto_mensagem}</Text>
+      <Text style={s.msgTime}>
+        {new Date(msg.data_envio).toLocaleTimeString('pt-BR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })}
+      </Text>
+    </View>
+  ))}
+</ScrollView>
 
       <View style={s.composer}>
        <TextInput
@@ -457,19 +912,21 @@ export default function App(){
         style={s.msgInput}
        />
 
-       <Pressable style={s.send} onPress={sendMessage}>
+       <Pressable style={s.send} onPress={handleSendMessage}>
         <Ionicons name="send" size={20} color="#fff"/>
        </Pressable>
       </View>
      </View>
     }
 
-    <View style={s.nav}>
-     <Nav icon="storefront-outline" label="Vitrine" active={screen==='home'} onPress={()=>setScreen('home')}/>
-     <Nav icon="receipt-outline" label="Pedidos" active={screen==='orders'} onPress={()=>setScreen('orders')}/>
-     <Nav icon="cart-outline" label={`Carrinho${cart.length?` (${cart.length})`:''}`} active={screen==='cart'} onPress={()=>setScreen('cart')}/>
-     <Nav icon="person-outline" label="Perfil" active={screen==='profile'||screen==='sellerProfile'||screen==='sellerDashboard'} onPress={()=>setScreen('profile')}/>
-    </View>
+   {screen !== 'conversation' && (
+  <View style={s.nav}>
+    <Nav icon="storefront-outline" label="Vitrine" active={screen==='home'} onPress={()=>setScreen('home')}/>
+    <Nav icon="receipt-outline" label="Pedidos" active={screen==='orders'} onPress={()=>setScreen('orders')}/>
+    <Nav icon="cart-outline" label={`Carrinho${cart.length ? ` (${cart.length})` : ''}`} active={screen==='cart'} onPress={()=>setScreen('cart')}/>
+    <Nav icon="person-outline" label="Perfil" active={screen==='profile'||screen==='sellerProfile'||screen==='sellerDashboard'} onPress={()=>setScreen('profile')}/>
+  </View>
+)}
 
    </View>
   </SafeAreaView>
@@ -487,6 +944,7 @@ function Back({title,onPress}:{title:string;onPress:()=>void}){
  )
 }
 
+
 function Metric({
   title,
   value,
@@ -499,10 +957,31 @@ function Metric({
   wide?: boolean;
 }) {
   return (
-    <View style={[s.metric, wide && s.metricWide]}>
-      <Text style={s.metricTitle}>{title}</Text>
-      <Text style={s.metricValue}>{value}</Text>
-      <Ionicons name={icon} size={27} color="#555" />
+    <View
+      style={[
+        s.metric,
+        wide && s.metricWide,
+        { flex: 1, minWidth: 0 },
+      ]}
+    >
+      <Text
+        style={s.metricTitle}
+        numberOfLines={2}
+        adjustsFontSizeToFit
+      >
+        {title}
+      </Text>
+
+      <Text
+        style={s.metricValue}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.7}
+      >
+        {value}
+      </Text>
+
+      <Ionicons name={icon} size={24} color="#555" />
     </View>
   );
 }
@@ -587,9 +1066,28 @@ const s=StyleSheet.create({
  dashboardTop:{backgroundColor:'#000',borderRadius:14,padding:16,marginBottom:12},
  dashStore:{fontSize:18,fontWeight:'900',color:'#fff'},
  dashPeriod:{fontSize:12,color:'#ddd',marginTop:4},
- metricRow:{flexDirection:'row',gap:8,alignItems:'stretch'},
- metric:{backgroundColor:'#dcdcdc',borderRadius:14,padding:12,width:'33%',minHeight:112,justifyContent:'space-between',elevation:2},
- metricWide:{width:'34%'},
+
+metricRow: {
+  flexDirection: 'row',
+  gap: 8,
+  alignItems: 'stretch',
+},
+
+metric: {
+  backgroundColor: '#dcdcdc',
+  borderRadius: 14,
+  padding: 12,
+  flex: 1,
+  minWidth: 0,
+  minHeight: 112,
+  justifyContent: 'space-between',
+  elevation: 2,
+},
+
+metricWide: {
+  flex: 1,
+},
+
  metricTitle:{fontSize:13,fontWeight:'800',color:'#222'},
  metricValue:{fontSize:18,fontWeight:'900',color:'#111'},
  chartCard:{backgroundColor:'#dcdcdc',borderRadius:15,padding:16,marginTop:12,elevation:2},
